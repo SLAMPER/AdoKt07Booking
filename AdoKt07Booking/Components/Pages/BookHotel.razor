@@ -1,0 +1,366 @@
+@page "/"
+@page "/book-hotel"
+@rendermode InteractiveServer
+@inject IHotelService HotelService
+@inject IJSRuntime Js
+
+<PageTitle>Book Hotel</PageTitle>
+
+<h1 class="h3 mb-1">Hotel Booking</h1>
+
+<div class="card shadow-sm border-0 mb-3">
+	<div class="card-body">
+		<div class="row g-3 align-items-end">
+			<div class="col-md-5">
+				<label class="form-label">Check in</label>
+				<InputDate @bind-Value="_filter.StartDate" @bind-Value:after="OnCheckInChangedAsync" class="form-control"/>
+			</div>
+			<div class="col-md-5">
+				<label class="form-label">Check out</label>
+				<InputDate @bind-Value="_filter.EndDate" @bind-Value:after="OnCheckOutChangedAsync" class="form-control"/>
+			</div>
+			<div class="col-md-2 d-grid">
+				<button class="btn btn-outline-secondary" type="button" disabled="@_loading" @onclick="ResetDatesAsync">Reset</button>
+			</div>
+		</div>
+		<div class="small text-muted mt-2">Minimum stay: 1 night.</div>
+		@if (_editingBookingId is not null)
+		{
+			<div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+				<span class="small text-muted">Editing booking #@_editingBookingId.Value</span>
+				<button class="btn btn-sm btn-primary" type="button" disabled="@_loading" @onclick="SaveEditAsync">Save changes</button>
+				<button class="btn btn-sm btn-outline-secondary" type="button" disabled="@_loading" @onclick="StopEditing">Discard</button>
+			</div>
+		}
+	</div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+	<div class="alert @(_isError ? "alert-danger" : "alert-success")" role="alert">@_message</div>
+}
+@{
+	var visibleRooms = _showBookedRooms
+		? _availability
+		: _availability.Where(room => !room.IsBooked).ToList();
+}
+
+<div class="card shadow-sm border-0 mb-4">
+	<div class="card-header bg-white d-flex justify-content-between align-items-center">
+		<div>
+			<strong>Available rooms</strong>
+			<div class="small text-muted">@_filter.StartDate.ToString("yyyy-MM-dd") to @_filter.EndDate.ToString("yyyy-MM-dd")</div>
+		</div>
+		<div class="d-flex align-items-center gap-3">
+			<div class="form-check form-switch mb-0">
+				<InputCheckbox id="showBookedRooms" class="form-check-input" @bind-Value="_showBookedRooms"/>
+				<label class="form-check-label small" for="showBookedRooms">Show booked</label>
+			</div>
+			<span class="badge text-bg-light">@visibleRooms.Count room(s)</span>
+		</div>
+	</div>
+	<div class="card-body p-0">
+		@if (visibleRooms.Count == 0)
+		{
+			<div
+				class="p-3 text-muted">@(_showBookedRooms ? "No rooms found. Add hotel rooms to the database first." : "No available rooms for these dates.")</div>
+		}
+		else
+		{
+			<table class="table table-striped mb-0 align-middle">
+				<thead>
+				<tr>
+					<th>Name</th>
+					<th>Type</th>
+					<th>Max Occupancy</th>
+					<th>Status</th>
+					<th class="text-end">Action</th>
+				</tr>
+				</thead>
+				<tbody>
+				@foreach (var room in visibleRooms)
+				{
+					<tr>
+						<td>@room.RoomName</td>
+						<td>@room.RoomType</td>
+						<td>@room.MaxOccupancy</td>
+						<td>
+							<span class="badge @(room.IsBooked ? "text-bg-secondary" : "text-bg-success")">
+								@(room.IsBooked ? "Booked" : "Available")
+							</span>
+						</td>
+						<td class="text-end">
+							<button class="btn btn-sm @(room.IsBooked ? "btn-outline-secondary" : "btn-success")"
+							        disabled="@(room.IsBooked || _loading)"
+							        @onclick="() => BookAsync(room.RoomId)">
+								@(room.IsBooked ? "Booked" : "Book")
+							</button>
+						</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+		}
+	</div>
+</div>
+
+<details class="card shadow-sm border-0" open>
+	<summary class="card-header bg-white d-flex justify-content-between align-items-center details-toggle">
+		<strong>View overlapping bookings</strong>
+		<span class="badge text-bg-light">@_windowBookings.Count</span>
+	</summary>
+	<div class="card-body p-0 border-top">
+		@if (_windowBookings.Count == 0)
+		{
+			<div class="p-3 text-muted">No bookings in this stay window.</div>
+		}
+		else
+		{
+			<table class="table table-sm mb-0 align-middle">
+				<thead>
+				<tr>
+					<th>ID</th>
+					<th>Room</th>
+					<th>Stay</th>
+					<th>Status</th>
+					<th class="text-end">Action</th>
+				</tr>
+				</thead>
+				<tbody>
+				@foreach (var booking in _windowBookings)
+				{
+					<tr class="@(booking.BookingId == _editingBookingId ? "table-primary" : null)">
+						<td>#@booking.BookingId</td>
+						<td>@booking.RoomName</td>
+						<td>@booking.StartTime.LocalDateTime.ToString("yyyy-MM-dd") to @booking.EndTime.LocalDateTime.ToString("yyyy-MM-dd")</td>
+						<td>
+							<span
+								class="badge @(booking.Status == BookingStatus.Confirmed ? "text-bg-success" : "text-bg-secondary")">@booking.Status</span>
+						</td>
+						<td class="text-end">
+							@if (booking.Status == BookingStatus.Confirmed)
+							{
+								<div class="btn-group btn-group-sm" role="group">
+									<button class="btn btn-outline-primary" disabled="@_loading" @onclick="() => BeginEdit(booking)">Edit
+									</button>
+									<button class="btn btn-outline-danger" disabled="@_loading"
+									        title="Hold Shift and click to skip confirmation"
+									        @onclick="args => CancelAsync(booking.BookingId, args)">Cancel
+									</button>
+								</div>
+							}
+						</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+		}
+	</div>
+</details>
+
+@code {
+	private readonly HotelFilterModel _filter = new();
+	private readonly List<HotelAvailabilityDto> _availability = [];
+	private readonly List<HotelBookingListItemDto> _windowBookings = [];
+	private bool _loading;
+	private long? _editingBookingId;
+	private bool _showBookedRooms = true;
+	private bool _isError;
+	private string? _message;
+
+	protected override async Task OnInitializedAsync()
+	{
+		await RefreshAsync();
+	}
+
+	private async Task OnCheckInChangedAsync()
+	{
+		EnsureDateRange();
+		await RefreshAsync();
+	}
+
+	private async Task OnCheckOutChangedAsync()
+	{
+		EnsureDateRange();
+		await RefreshAsync();
+	}
+
+	private async Task ResetDatesAsync()
+	{
+		_filter.StartDate = DateOnly.FromDateTime(DateTime.Today);
+		_filter.EndDate = DateOnly.FromDateTime(DateTime.Today.AddDays(1));
+		await RefreshAsync();
+	}
+
+	private async Task RefreshAsync()
+	{
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			var start = ToLocalMidnight(_filter.StartDate);
+			var end = ToLocalMidnight(_filter.EndDate);
+			var availabilityTask = HotelService.GetAvailabilityAsync(start, end);
+			var bookingsTask = HotelService.GetBookingsAsync();
+			await Task.WhenAll(availabilityTask, bookingsTask);
+
+			_availability.Clear();
+			_availability.AddRange(await availabilityTask);
+
+			var bookings = await bookingsTask;
+			_windowBookings.Clear();
+			_windowBookings.AddRange(bookings
+				.Where(b => Overlaps(start, end, b.StartTime, b.EndTime))
+				.OrderByDescending(b => b.StartTime));
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private async Task BookAsync(int roomId)
+	{
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			await HotelService.CreateBookingAsync(new CreateHotelBookingDto(
+				roomId,
+				ToLocalMidnight(_filter.StartDate),
+				ToLocalMidnight(_filter.EndDate)));
+
+			await RefreshAsync();
+			_message = "Booking confirmed.";
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void BeginEdit(HotelBookingListItemDto booking)
+	{
+		_editingBookingId = booking.BookingId;
+		_filter.StartDate = DateOnly.FromDateTime(booking.StartTime.LocalDateTime);
+		_filter.EndDate = DateOnly.FromDateTime(booking.EndTime.LocalDateTime);
+		EnsureDateRange();
+	}
+
+	private async Task SaveEditAsync()
+	{
+		if (_editingBookingId is null)
+		{
+			return;
+		}
+
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		var bookingId = _editingBookingId.Value;
+
+		try
+		{
+			await HotelService.UpdateBookingAsync(bookingId, new UpdateHotelBookingDto(
+				ToLocalMidnight(_filter.StartDate),
+				ToLocalMidnight(_filter.EndDate)));
+			await RefreshAsync();
+			_message = $"Booking #{bookingId} updated.";
+			_editingBookingId = null;
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void StopEditing()
+	{
+		_editingBookingId = null;
+	}
+
+	private async Task CancelAsync(long bookingId, MouseEventArgs args)
+	{
+		if (!args.ShiftKey)
+		{
+			var confirmed = await Js.InvokeAsync<bool>("confirm", $"Cancel hotel booking #{bookingId}?");
+			if (!confirmed)
+			{
+				return;
+			}
+		}
+
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			await HotelService.CancelBookingAsync(bookingId);
+			await RefreshAsync();
+			_message = $"Booking #{bookingId} cancelled.";
+			if (_editingBookingId == bookingId)
+			{
+				_editingBookingId = null;
+			}
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void EnsureDateRange()
+	{
+		if (_filter.EndDate <= _filter.StartDate)
+		{
+			_filter.EndDate = _filter.StartDate.AddDays(1);
+		}
+	}
+
+	private static bool Overlaps(
+		DateTimeOffset requestedStart, DateTimeOffset requestedEnd, DateTimeOffset existingStart,
+		DateTimeOffset existingEnd
+	)
+	{
+		return requestedStart < existingEnd && requestedEnd > existingStart;
+	}
+
+	private static DateTimeOffset ToLocalMidnight(DateOnly date)
+	{
+		var local = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Local);
+		return new DateTimeOffset(local);
+	}
+
+	private sealed class HotelFilterModel
+	{
+		public DateOnly StartDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+		public DateOnly EndDate { get; set; } = DateOnly.FromDateTime(DateTime.Today.AddDays(1));
+	}
+
+}

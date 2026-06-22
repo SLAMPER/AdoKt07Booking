@@ -1,0 +1,414 @@
+@page "/book-table"
+@rendermode InteractiveServer
+@inject IRestaurantService RestaurantService
+@inject IJSRuntime Js
+
+<PageTitle>Book Table</PageTitle>
+
+<h1 class="h3 mb-1">Restaurant Table Booking</h1>
+
+<div class="card shadow-sm border-0 mb-3">
+	<div class="card-body">
+		<div class="row g-3 align-items-end">
+			<div class="col-md-5">
+				<label class="form-label">Start</label>
+				<InputDate @bind-Value="_filter.StartLocal" @bind-Value:after="OnStartChangedAsync" Type="InputDateType.DateTimeLocal"
+				           class="form-control"/>
+			</div>
+			<div class="col-md-5">
+				<label class="form-label">End</label>
+				<InputDate @bind-Value="_filter.EndLocal" @bind-Value:after="OnEndChangedAsync" Type="InputDateType.DateTimeLocal"
+				           class="form-control"/>
+			</div>
+			<div class="col-md-2 d-grid">
+				<button class="btn btn-outline-secondary" type="button" disabled="@_loading" @onclick="ResetDateTimesAsync">Reset</button>
+			</div>
+		</div>
+
+		<div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+			<span class="small text-muted">Quick duration:</span>
+			<button class="btn btn-sm btn-outline-primary" type="button" disabled="@_loading"
+			        @onclick="() => SetDurationAsync(TimeSpan.FromMinutes(30))">30m
+			</button>
+			<button class="btn btn-sm btn-outline-primary" type="button" disabled="@_loading"
+			        @onclick="() => SetDurationAsync(TimeSpan.FromHours(1))">1h
+			</button>
+			<button class="btn btn-sm btn-outline-primary" type="button" disabled="@_loading"
+			        @onclick="() => SetDurationAsync(TimeSpan.FromMinutes(90))">1h 30m
+			</button>
+			<button class="btn btn-sm btn-outline-primary" type="button" disabled="@_loading"
+			        @onclick="() => SetDurationAsync(TimeSpan.FromHours(2))">2h
+			</button>
+			<span class="badge text-bg-light ms-1">Current duration: @DurationLabel</span>
+		</div>
+
+		@if (_editingBookingId is not null)
+		{
+			<div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+				<span class="small text-muted">Editing booking #@_editingBookingId.Value</span>
+				<button class="btn btn-sm btn-primary" type="button" disabled="@_loading" @onclick="SaveEditAsync">Save changes</button>
+				<button class="btn btn-sm btn-outline-secondary" type="button" disabled="@_loading" @onclick="StopEditing">Discard</button>
+			</div>
+		}
+	</div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+	<div class="alert @(_isError ? "alert-danger" : "alert-success")" role="alert">@_message</div>
+}
+
+@{
+	var visibleTables = _showBookedTables
+		? _availability
+		: _availability.Where(table => !table.IsBooked).ToList();
+}
+
+<div class="card shadow-sm border-0 mb-4">
+	<div class="card-header bg-white d-flex justify-content-between align-items-center">
+		<div>
+			<strong>Available tables</strong>
+			<div
+				class="small text-muted">@_filter.StartLocal.ToString("yyyy-MM-dd HH:mm") to @_filter.EndLocal.ToString("yyyy-MM-dd HH:mm")</div>
+		</div>
+		<div class="d-flex align-items-center gap-3">
+			<div class="form-check form-switch mb-0">
+				<InputCheckbox id="showBookedTables" class="form-check-input" @bind-Value="_showBookedTables"/>
+				<label class="form-check-label small" for="showBookedTables">Show booked</label>
+			</div>
+			<span class="badge text-bg-light">@visibleTables.Count table(s)</span>
+		</div>
+	</div>
+	<div class="card-body p-0">
+		@if (visibleTables.Count == 0)
+		{
+			<div
+				class="p-3 text-muted">@(_showBookedTables ? "No tables found. Add restaurant tables to the database first." : "No available tables for this slot.")</div>
+		}
+		else
+		{
+			<table class="table table-striped mb-0 align-middle">
+				<thead>
+				<tr>
+					<th>Name</th>
+					<th>Capacity</th>
+					<th>Section</th>
+					<th>Status</th>
+					<th class="text-end">Action</th>
+				</tr>
+				</thead>
+				<tbody>
+				@foreach (var table in visibleTables)
+				{
+					<tr>
+						<td>@table.TableName</td>
+						<td>@table.SeatCapacity</td>
+						<td>@(string.IsNullOrWhiteSpace(table.Section) ? "-" : table.Section)</td>
+						<td>
+							<span class="badge @(table.IsBooked ? "text-bg-secondary" : "text-bg-success")">
+								@(table.IsBooked ? "Booked" : "Available")
+							</span>
+						</td>
+						<td class="text-end">
+							<button class="btn btn-sm @(table.IsBooked ? "btn-outline-secondary" : "btn-success")"
+							        disabled="@(table.IsBooked || _loading)"
+							        @onclick="() => BookAsync(table.TableId)">
+								@(table.IsBooked ? "Booked" : "Book")
+							</button>
+						</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+		}
+	</div>
+</div>
+
+<details class="card shadow-sm border-0" open>
+	<summary class="card-header bg-white d-flex justify-content-between align-items-center details-toggle">
+		<strong>View overlapping bookings</strong>
+		<span class="badge text-bg-light">@_windowBookings.Count</span>
+	</summary>
+	<div class="card-body p-0 border-top">
+		@if (_windowBookings.Count == 0)
+		{
+			<div class="p-3 text-muted">No bookings in this slot.</div>
+		}
+		else
+		{
+			<table class="table table-sm mb-0 align-middle">
+				<thead>
+				<tr>
+					<th>ID</th>
+					<th>Table</th>
+					<th>Slot</th>
+					<th>Status</th>
+					<th class="text-end">Action</th>
+				</tr>
+				</thead>
+				<tbody>
+				@foreach (var booking in _windowBookings)
+				{
+					<tr class="@(booking.BookingId == _editingBookingId ? "table-primary" : null)">
+						<td>#@booking.BookingId</td>
+						<td>@booking.TableName</td>
+						<td>@booking.StartTime.LocalDateTime.ToString("yyyy-MM-dd HH:mm") to @booking.EndTime.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+						<td>
+							<span
+								class="badge @(booking.Status == BookingStatus.Confirmed ? "text-bg-success" : "text-bg-secondary")">@booking.Status</span>
+						</td>
+						<td class="text-end">
+							@if (booking.Status == BookingStatus.Confirmed)
+							{
+								<div class="btn-group btn-group-sm" role="group">
+									<button class="btn btn-outline-primary" disabled="@_loading" @onclick="() => BeginEdit(booking)">Edit
+									</button>
+									<button class="btn btn-outline-danger" disabled="@_loading"
+									        title="Hold Shift and click to skip confirmation"
+									        @onclick="args => CancelAsync(booking.BookingId, args)">Cancel
+									</button>
+								</div>
+							}
+						</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+		}
+	</div>
+</details>
+
+@code {
+	private static readonly TimeSpan MaxDuration = TimeSpan.FromHours(2);
+	private static readonly TimeSpan DefaultDuration = TimeSpan.FromHours(1);
+
+	private readonly TableFilterModel _filter = new();
+	private readonly List<TableAvailabilityDto> _availability = [];
+	private readonly List<TableBookingListItemDto> _windowBookings = [];
+	private bool _loading;
+	private long? _editingBookingId;
+	private bool _showBookedTables = true;
+	private bool _isError;
+	private string? _message;
+
+	private string DurationLabel => $"{(int)(_filter.EndLocal - _filter.StartLocal).TotalMinutes} min";
+
+	protected override async Task OnInitializedAsync()
+	{
+		NormalizeFromStart();
+		await RefreshAsync();
+	}
+
+	private async Task OnStartChangedAsync()
+	{
+		NormalizeFromStart();
+		await RefreshAsync();
+	}
+
+	private async Task OnEndChangedAsync()
+	{
+		NormalizeFromEnd();
+		await RefreshAsync();
+	}
+
+	private async Task ResetDateTimesAsync()
+	{
+		_filter.StartLocal = DateTime.Now;
+		_filter.EndLocal = _filter.StartLocal.Add(DefaultDuration);
+		await RefreshAsync();
+	}
+
+	private async Task SetDurationAsync(TimeSpan duration)
+	{
+		_filter.EndLocal = _filter.StartLocal.Add(duration);
+		NormalizeFromEnd();
+		await RefreshAsync();
+	}
+
+	private async Task RefreshAsync()
+	{
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			var (start, end) = ParseFilter();
+			var availabilityTask = RestaurantService.GetAvailabilityAsync(start, end);
+			var bookingsTask = RestaurantService.GetBookingsAsync();
+			await Task.WhenAll(availabilityTask, bookingsTask);
+
+			_availability.Clear();
+			_availability.AddRange(await availabilityTask);
+
+			var bookings = await bookingsTask;
+			_windowBookings.Clear();
+			_windowBookings.AddRange(bookings
+				.Where(b => Overlaps(start, end, b.StartTime, b.EndTime))
+				.OrderByDescending(b => b.StartTime));
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private async Task BookAsync(int tableId)
+	{
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			var (start, end) = ParseFilter();
+			await RestaurantService.CreateBookingAsync(new CreateTableBookingDto(tableId, start, end));
+			await RefreshAsync();
+			_message = "Booking confirmed.";
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void BeginEdit(TableBookingListItemDto booking)
+	{
+		_editingBookingId = booking.BookingId;
+		_filter.StartLocal = booking.StartTime.LocalDateTime;
+		_filter.EndLocal = booking.EndTime.LocalDateTime;
+		NormalizeFromStart();
+	}
+
+	private async Task SaveEditAsync()
+	{
+		if (_editingBookingId is null)
+		{
+			return;
+		}
+
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		var bookingId = _editingBookingId.Value;
+
+		try
+		{
+			var (start, end) = ParseFilter();
+			await RestaurantService.UpdateBookingAsync(bookingId, new UpdateTableBookingDto(start, end));
+			await RefreshAsync();
+			_message = $"Booking #{bookingId} updated.";
+			_editingBookingId = null;
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void StopEditing()
+	{
+		_editingBookingId = null;
+	}
+
+	private async Task CancelAsync(long bookingId, MouseEventArgs args)
+	{
+		if (!args.ShiftKey)
+		{
+			var confirmed = await Js.InvokeAsync<bool>("confirm", $"Cancel table booking #{bookingId}?");
+			if (!confirmed)
+			{
+				return;
+			}
+		}
+
+		_loading = true;
+		_message = null;
+		_isError = false;
+
+		try
+		{
+			await RestaurantService.CancelBookingAsync(bookingId);
+			await RefreshAsync();
+			_message = $"Booking #{bookingId} cancelled.";
+			if (_editingBookingId == bookingId)
+			{
+				_editingBookingId = null;
+			}
+		}
+		catch (Exception ex)
+		{
+			_isError = true;
+			_message = ex.Message;
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void NormalizeFromStart()
+	{
+		if (_filter.EndLocal <= _filter.StartLocal)
+		{
+			_filter.EndLocal = _filter.StartLocal.Add(DefaultDuration);
+		}
+
+		if (_filter.EndLocal > _filter.StartLocal.Add(MaxDuration))
+		{
+			_filter.EndLocal = _filter.StartLocal.Add(MaxDuration);
+		}
+	}
+
+	private void NormalizeFromEnd()
+	{
+		if (_filter.EndLocal <= _filter.StartLocal)
+		{
+			_filter.EndLocal = _filter.StartLocal.AddMinutes(30);
+		}
+
+		if (_filter.EndLocal > _filter.StartLocal.Add(MaxDuration))
+		{
+			_filter.EndLocal = _filter.StartLocal.Add(MaxDuration);
+		}
+	}
+
+	private (DateTimeOffset Start, DateTimeOffset End) ParseFilter()
+	{
+		return (
+			new DateTimeOffset(DateTime.SpecifyKind(_filter.StartLocal, DateTimeKind.Local)),
+			new DateTimeOffset(DateTime.SpecifyKind(_filter.EndLocal, DateTimeKind.Local))
+		);
+	}
+
+	private static bool Overlaps(
+		DateTimeOffset requestedStart, DateTimeOffset requestedEnd, DateTimeOffset existingStart,
+		DateTimeOffset existingEnd
+	)
+	{
+		return requestedStart < existingEnd && requestedEnd > existingStart;
+	}
+
+	private sealed class TableFilterModel
+	{
+		public DateTime StartLocal { get; set; } = DateTime.Now;
+		public DateTime EndLocal { get; set; } = DateTime.Now.Add(DefaultDuration);
+	}
+
+}
